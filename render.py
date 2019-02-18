@@ -37,8 +37,8 @@ def direction(x, y, z):
 
 
 #camera = np.array([0, 0, 0], dtype=np.float32)
-WIDTH = 2000
-HEIGHT = 2000
+WIDTH = 200
+HEIGHT = 200
 focal_length = 1.0
 
 # Camera starts at the origin pointing down the x axis in the positive
@@ -65,10 +65,9 @@ surfaces = [
 ]
 surface_colors = np.stack([s.color for s in surfaces])
 emitters = [
-    Emitter(source=pt(2,2,2), color=pt(1,1,1))
+    Emitter(source=pt(2,2,2), color=pt(1,1,1)),
+    Emitter(source=pt(2,-2,-2), color=pt(0.25,0,0)),
 ]
-
-emitter = emitters[0]
 
 def march_op(prop, dist):
     return tf.group(prop.assign_add(dist))
@@ -104,11 +103,27 @@ with tf.Session() as sess:
     normals, = tf.gradients(closest_surface_dist, ray_ends)
     normals = tf.math.l2_normalize(normals, axis=0)
 
-    pts_to_emitter = tf.expand_dims(emitter.source, 1) - ray_ends
-    emitter_dot_products = tf.reduce_sum(
-        tf.math.l2_normalize(pts_to_emitter, axis=0)*normals, axis=0)
+    emitters_sources = tf.stack([e.source for e in emitters], axis=1)
+    emitters_colors = tf.stack([e.color for e in emitters], axis=1)
 
+    pts_to_emitters = (tf.expand_dims(emitters_sources, axis=2)
+        - tf.expand_dims(ray_ends, axis=1))
+    pts_to_emitters = tf.math.l2_normalize(pts_to_emitters, axis=0)
 
+    emitters_dot_products = tf.reduce_sum(
+        pts_to_emitters * tf.expand_dims(normals, axis=1),
+        axis=0)
+    emitters_dot_products = tf.maximum(emitters_dot_products, 0)
+
+    emitters_colors_per_point = tf.expand_dims(
+        emitters_colors, axis=2) * tf.expand_dims(emitters_dot_products, axis=0)
+    surface_color = tf.transpose(tf.gather(surface_colors, closest_surface_arg))
+    reflected_color_per_emitter = emitters_colors_per_point * tf.expand_dims(surface_color, axis=1)
+    color = tf.reduce_sum(reflected_color_per_emitter, axis=1)
+
+    color = white_balance(color)
+    color = gamma_correct(color)
+    color = tf.reshape(color, (3, WIDTH, HEIGHT))
 
     tf.global_variables_initializer().run()
 
@@ -123,15 +138,7 @@ with tf.Session() as sess:
         if r_all_converged:
             break
 
-    emitter_dot_products = tf.maximum(emitter_dot_products, 0)
 
-    emitter_color_per_point = tf.expand_dims(emitter.color, 1) * emitter_dot_products
-    surface_color = tf.transpose(tf.gather(surface_colors, closest_surface_arg))
-    reflected_color = emitter_color_per_point * surface_color
-
-    color = white_balance(reflected_color)
-    color = gamma_correct(color)
-    color = tf.reshape(color, (3, WIDTH, HEIGHT))
 
 
 #    color = normals[0, :]
