@@ -37,17 +37,19 @@ def direction(x, y, z):
 
 
 #camera = np.array([0, 0, 0], dtype=np.float32)
-WIDTH = 500
-HEIGHT = 500
-
-camera_src = pt(0, 0, 0)
-camera_point = direction(1, 0, 0)
-camera_tilt = direction(0, 0, 1)
+WIDTH = 2000
+HEIGHT = 2000
 focal_length = 1.0
 
-pixels2d = np.stack(np.mgrid[-1:1:(2.0/WIDTH), -1:1:(2.0/HEIGHT)])
-pixels3d = np.concatenate([np.full((1,)+ pixels2d.shape[1:], focal_length), pixels2d])
-rays = np.reshape(pixels3d, (3, WIDTH*HEIGHT))
+# Camera starts at the origin pointing down the x axis in the positive
+# direction.
+y_points = tf.range(-1,  1,  2.0/WIDTH)
+z_points = tf.range( 1, -1, -2.0/HEIGHT)
+y_coords, z_coords = tf.meshgrid(y_points, z_points)
+x_coords = tf.fill(y_coords.shape, focal_length)
+
+pixels3d = tf.stack([x_coords, y_coords, z_coords])
+rays = tf.reshape(pixels3d, (3, WIDTH*HEIGHT))
 #
 # rays = np.reshape(pixels3d, (3, -1))
 # rays = np.swapaxes(rays, 0, 1)
@@ -58,7 +60,7 @@ Emitter = collections.namedtuple('Emitter', 'source color')
 surfaces = [
     Surface(distance=sphere_distance(pt(5, 0, 0), 1),
             color=pt(1, 0, 0)),
-    Surface(distance=invert(sphere_distance(pt(0, 0, 0), 50)),
+    Surface(distance=invert(sphere_distance(pt(0, 0, 0), 5)),
             color=pt(0, 0, 1)),
 ]
 surface_colors = np.stack([s.color for s in surfaces])
@@ -86,9 +88,9 @@ with tf.Session() as sess:
     normals, = tf.gradients(closest_surface_dist, ray_ends)
     normals = tf.math.l2_normalize(normals, axis=0)
 
-    emitter_to_pts = ray_ends - tf.expand_dims(emitter.source, 1)
+    pts_to_emitter = tf.expand_dims(emitter.source, 1) - ray_ends
     emitter_dot_products = tf.reduce_sum(
-        tf.math.l2_normalize(emitter_to_pts, axis=0)*normals, axis=0)
+        tf.math.l2_normalize(pts_to_emitter, axis=0)*normals, axis=0)
 
 
 
@@ -105,9 +107,20 @@ with tf.Session() as sess:
         if r_all_converged:
             break
 
-    color = tf.stack([emitter_dot_products] * 3)
+    emitter_dot_products = tf.maximum(emitter_dot_products, 0)
+
+    emitter_color_per_point = tf.expand_dims(emitter.color, 1) * emitter_dot_products
+    surface_color = tf.transpose(tf.gather(surface_colors, closest_surface_arg))
+    reflected_color = emitter_color_per_point * surface_color
+
+    color = reflected_color
     color = tf.reshape(color, (3, WIDTH, HEIGHT))
-    color = tf.transpose(color)
+
+
+#    color = normals[0, :]
+#    color = tf.reshape(color, (WIDTH, HEIGHT))
+
+    color = tf.transpose(color, perm=[1, 2, 0])
     # touched_surface = tf.argmin(surface_dists, axis=0)
     # color = tf.gather(surface_colors, touched_surface
     c = sess.run(color)
