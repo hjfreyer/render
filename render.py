@@ -73,6 +73,22 @@ emitter = emitters[0]
 def march_op(prop, dist):
     return tf.group(prop.assign_add(dist))
 
+
+def white_balance(colors):
+    """Takes (3, N), does white balance"""
+    max_per_channel = tf.math.reduce_max(colors, axis=1, keepdims=True)
+    colors = colors / max_per_channel
+    colors = tf.minimum(colors, 1)  # In case of really small values of
+                                    # max_per_channel causing problems.
+    return colors
+
+def gamma_correct(colors):
+    # Formula from https://mitchellkember.com/blog/post/ray-tracer/
+    linear_regime = 12.82 * colors
+    exp_regime = 1.055 * colors**(1/2.4) - 0.055
+    return tf.where(color <= 0.0031308, linear_regime, exp_regime)
+
+
 with tf.Session() as sess:
     prop = tf.Variable(np.zeros(rays.shape[1]), dtype=np.float32)
 
@@ -113,7 +129,8 @@ with tf.Session() as sess:
     surface_color = tf.transpose(tf.gather(surface_colors, closest_surface_arg))
     reflected_color = emitter_color_per_point * surface_color
 
-    color = reflected_color
+    color = white_balance(reflected_color)
+    color = gamma_correct(color)
     color = tf.reshape(color, (3, WIDTH, HEIGHT))
 
 
