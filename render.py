@@ -4,7 +4,7 @@ import collections
 import numpy as np
 
 # Imports for visualization
-import PIL.Image
+from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
 
@@ -37,8 +37,8 @@ def direction(x, y, z):
 
 
 #camera = np.array([0, 0, 0], dtype=np.float32)
-WIDTH = 200
-HEIGHT = 200
+WIDTH = 1000
+HEIGHT = 1000
 focal_length = 1.0
 
 # Camera starts at the origin pointing down the x axis in the positive
@@ -59,8 +59,10 @@ Emitter = collections.namedtuple('Emitter', 'source color')
 
 surfaces = [
     Surface(distance=sphere_distance(pt(5, 0, 0), 1),
-            color=pt(1, 0, 0)),
-    Surface(distance=invert(sphere_distance(pt(0, 0, 0), 5)),
+            color=pt(1, 0, 1)),
+    Surface(distance=sphere_distance(pt(3, 2, 0), 0.5),
+            color=pt(1, 1, 0)),
+    Surface(distance=invert(sphere_distance(pt(0, 0, 0), 20)),
             color=pt(0, 0, 1)),
 ]
 surface_colors = np.stack([s.color for s in surfaces])
@@ -132,8 +134,7 @@ with tf.Session() as sess:
     idx = 0
     while True:
         print(idx)
-        _, r_all_converged, r_closest_surface_arg = sess.run(
-            [opt_op, all_converged, closest_surface_arg])
+        _, r_all_converged = sess.run([opt_op, all_converged])
         idx += 1
         if r_all_converged:
             break
@@ -145,9 +146,11 @@ with tf.Session() as sess:
 #    color = tf.reshape(color, (WIDTH, HEIGHT))
 
     color = tf.transpose(color, perm=[1, 2, 0])
+    color = tf.cast(256*color, dtype=tf.uint8)
     # touched_surface = tf.argmin(surface_dists, axis=0)
     # color = tf.gather(surface_colors, touched_surface
     c = sess.run(color)
+    Image.fromarray(c).save('/tmp/render.png')
     plt.imshow(c)
     plt.show()
 
