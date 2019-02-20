@@ -8,37 +8,19 @@ from PIL import Image
 from io import BytesIO
 import matplotlib.pyplot as plt
 
-def surface(p):
-    #p = p - tf.expand_dims(tf.expand_dims(np.array([5.0, 0, 0], dtype=np.float32), 1), 1)
-    p = p - match_rank(np.array([5.0, 0, 0], dtype=np.float32), p)
-    return tf.norm(p, axis=0) -1
-
-def match_rank(a, b):
-    while len(a.shape) < len(b.shape):
-        a = tf.expand_dims(a, len(a.shape))
-    return a
-
-def sphere_distance(center, radius):
-    def distance(pts):
-        distance_from_center = pts - match_rank(center, pts)
-        return tf.norm(distance_from_center, axis=0) - radius
-    return distance
-
-def invert(dist):
-    def d(pts):
-        return -dist(pts)
-    return d
+import geom
 
 def pt(x, y, z):
-    return np.array([x, y, z], dtype=np.float32)
+    return np.array([x, y, z], dtype=np.float64)
 
 def direction(x, y, z):
-    return tf.math.l2_normalize(tf.constant([x, y, z], dtype=np.float32))
+    return tf.math.l2_normalize(tf.constant([x, y, z], dtype=np.float64))
 
 
-#camera = np.array([0, 0, 0], dtype=np.float32)
+#camera = np.array([0, 0, 0], dtype=np.float64)
 WIDTH = 1000
 HEIGHT = 1000
+CONVERGED = 0.001
 focal_length = 1.0
 
 # Camera starts at the origin pointing down the x axis in the positive
@@ -48,31 +30,60 @@ z_points = tf.range( 1, -1, -2.0/HEIGHT)
 y_coords, z_coords = tf.meshgrid(y_points, z_points)
 x_coords = tf.fill(y_coords.shape, focal_length)
 
-pixels3d = tf.stack([x_coords, y_coords, z_coords])
+pixels3d = tf.cast(tf.stack([x_coords, y_coords, z_coords]), dtype=tf.float64)
 rays = tf.reshape(pixels3d, (3, WIDTH*HEIGHT))
+rays = tf.math.l2_normalize(rays, axis=0)
+
 #
 # rays = np.reshape(pixels3d, (3, -1))
 # rays = np.swapaxes(rays, 0, 1)
 
-Surface = collections.namedtuple('Surface', 'distance color')
+Surface = collections.namedtuple('Surface', 'geometry color')
 Emitter = collections.namedtuple('Emitter', 'source color')
 
 surfaces = [
-    Surface(distance=sphere_distance(pt(5, 0, 0), 1),
+    Surface(geometry=geom.Sphere(pt(5, 0, 0), 1),
             color=pt(1, 0, 1)),
-    Surface(distance=sphere_distance(pt(3, 2, 0), 0.5),
-            color=pt(1, 1, 0)),
-    Surface(distance=invert(sphere_distance(pt(0, 0, 0), 20)),
+    Surface(geometry=geom.Sphere(pt(3, 2, 0), 0.5),
+             color=pt(1, 1, 0)),
+    Surface(geometry=geom.Intersection([geom.Plane(pt(10, 0, 0), direction(-1, -1, 0)),
+                                    geom.Plane(pt(10, 0, 0), direction(0, 0, 1))]),
+           #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
+           color=pt(0, 1, 1)),
+
+   Surface(geometry=geom.Box(pt(2, -2, 0), pt(3, 1, 1)),
+          #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
+          color=pt(0, 1, 1)),
+    Surface(geometry=geom.Inverse(geom.Sphere(pt(0, 0, 0), 100)),
             color=pt(0, 0, 1)),
-]
+ ]
 surface_colors = np.stack([s.color for s in surfaces])
 emitters = [
     Emitter(source=pt(2,2,2), color=pt(1,1,1)),
     Emitter(source=pt(2,-2,-2), color=pt(0.25,0,0)),
 ]
 
+def size_splits(tensor, split_size, axis=0):
+    """Splits the tensor according to chunks of split_sizes.
+
+    Arguments:
+        tensor (Tensor): tensor to split.
+        split_sizes (list(int)): sizes of chunks
+        dim (int): dimension along which to split the tensor.
+    """
+    res = []
+    for start in range(0, tensor.shape[axis], split_size):
+        slice_start = [0,] * len(tensor.shape)
+        slice_size = list(tensor.shape)
+        slice_start[axis] = start
+        slice_size[axis] = split_size
+        res.append(tf.slice(tensor, slice_start, slice_size))
+    return res
+
 def march_op(prop, dist):
-    return tf.group(prop.assign_add(dist))
+    converged = dist < CONVERGED
+    delta = tf.where(converged, tf.zeros_like(dist), dist)
+    return tf.group(prop.assign_add(delta))
 
 
 def white_balance(colors):
@@ -91,14 +102,17 @@ def gamma_correct(colors):
 
 
 with tf.Session() as sess:
-    prop = tf.Variable(np.zeros(rays.shape[1]), dtype=np.float32)
+    prop = tf.Variable(np.zeros(rays.shape[1]), dtype=np.float64)
 
-    ray_ends = rays * tf.expand_dims(prop, 0)
-    surface_dists = tf.stack([s.distance(ray_ends) for s in surfaces])
+    ray_ends = rays * tf.expand_dims(prop, 0) + tf.constant([[0], [0], [1]], dtype=tf.float64)
+    ray_batches = size_splits(ray_ends, int(ray_ends.shape[1].value / 7), axis=1)
+    print(ray_batches)
+
+    surface_dists = tf.stack([s.geometry.distance(ray_ends) for s in surfaces])
 
     closest_surface_arg = tf.argmin(surface_dists, axis=0)
     closest_surface_dist = tf.math.reduce_min(surface_dists, axis=0)
-    all_converged = tf.math.reduce_all(closest_surface_dist < 0.01)
+    all_converged = tf.math.reduce_all(closest_surface_dist < CONVERGED)
 
     opt_op = march_op(prop, closest_surface_dist)
 
@@ -126,10 +140,19 @@ with tf.Session() as sess:
     color = white_balance(color)
     color = gamma_correct(color)
     color = tf.reshape(color, (3, WIDTH, HEIGHT))
+    color = tf.transpose(color, perm=[1, 2, 0])
+    color = tf.cast(256*color, dtype=tf.uint8)
+    #color = tf.reshape(tf.cast(closest_surface_arg, tf.float64), (WIDTH, HEIGHT))
+    #color = tf.reshape(prop, (WIDTH, HEIGHT))
+    #color = tf.reshape(normals[0,:], (WIDTH, HEIGHT))
+
+    xx = tf.reshape(surface_dists, (-1, WIDTH, HEIGHT))[:, 107, 184]
 
     tf.global_variables_initializer().run()
 
     print('Graph built')
+
+
 
     idx = 0
     while True:
@@ -145,12 +168,15 @@ with tf.Session() as sess:
 #    color = normals[0, :]
 #    color = tf.reshape(color, (WIDTH, HEIGHT))
 
-    color = tf.transpose(color, perm=[1, 2, 0])
-    color = tf.cast(256*color, dtype=tf.uint8)
+
     # touched_surface = tf.argmin(surface_dists, axis=0)
     # color = tf.gather(surface_colors, touched_surface
+    print(sess.run(xx))
     c = sess.run(color)
-    Image.fromarray(c).save('/tmp/render.png')
+    try:
+        Image.fromarray(c).save('/tmp/render.png')
+    except Exception as e:
+        print(e)
     plt.imshow(c)
     plt.show()
 
@@ -180,7 +206,7 @@ with tf.Session() as sess:
 # Z = X+1j*Y
 # xs = tf.constant(Z.astype(np.complex64))
 # zs = tf.Variable(xs)
-# ns = tf.Variable(tf.zeros_like(xs, tf.float32))
+# ns = tf.Variable(tf.zeros_like(xs, tf.float64))
 #
 # tf.global_variables_initializer().run()
 #
@@ -198,7 +224,7 @@ with tf.Session() as sess:
 # #
 # step = tf.group(
 #   zs.assign(zs_),
-#   ns.assign_add(tf.cast(not_diverged, tf.float32))
+#   ns.assign_add(tf.cast(not_diverged, tf.float64))
 #   )
 #
 # for i in range(200): step.run()
