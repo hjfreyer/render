@@ -33,7 +33,7 @@ x_coords = tf.fill(y_coords.shape, focal_length)
 pixels3d = tf.cast(tf.stack([x_coords, y_coords, z_coords]), dtype=tf.float64)
 rays = tf.reshape(pixels3d, (3, WIDTH*HEIGHT))
 rays = tf.math.l2_normalize(rays, axis=0)
-
+rays = tf.concat([tf.zeros_like(rays), rays], axis=0)
 #
 # rays = np.reshape(pixels3d, (3, -1))
 # rays = np.swapaxes(rays, 0, 1)
@@ -51,9 +51,9 @@ surfaces = [
            #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
            color=pt(0, 1, 1)),
 
-   Surface(geometry=geom.Box(pt(2, -2, 0), pt(3, 1, 1)),
-          #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
-          color=pt(0, 1, 1)),
+   # Surface(geometry=geom.Box(pt(2, -2, 0), pt(3, 1, 1)),
+   #        #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
+   #        color=pt(0, 1, 1)),
     Surface(geometry=geom.Inverse(geom.Sphere(pt(0, 0, 0), 100)),
             color=pt(0, 0, 1)),
  ]
@@ -104,9 +104,7 @@ def gamma_correct(colors):
 with tf.Session() as sess:
     prop = tf.Variable(np.zeros(rays.shape[1]), dtype=np.float64)
 
-    ray_ends = rays * tf.expand_dims(prop, 0) + tf.constant([[0], [0], [1]], dtype=tf.float64)
-    ray_batches = size_splits(ray_ends, int(ray_ends.shape[1].value / 7), axis=1)
-    print(ray_batches)
+    ray_ends = rays[0:3] + rays[3:6] * tf.expand_dims(prop, 0)
 
     surface_dists = tf.stack([s.geometry.distance(ray_ends) for s in surfaces])
 
