@@ -18,8 +18,8 @@ def direction(x, y, z):
 
 
 #camera = np.array([0, 0, 0], dtype=np.float64)
-WIDTH = 1000
-HEIGHT = 1000
+WIDTH = 100
+HEIGHT = 100
 CONVERGED = 0.001
 focal_length = 1.0
 
@@ -33,7 +33,8 @@ x_coords = tf.fill(y_coords.shape, focal_length)
 pixels3d = tf.cast(tf.stack([x_coords, y_coords, z_coords]), dtype=tf.float64)
 rays = tf.reshape(pixels3d, (3, WIDTH*HEIGHT))
 rays = tf.math.l2_normalize(rays, axis=0)
-rays = tf.concat([tf.zeros_like(rays), rays], axis=0)
+all_rays = tf.concat([tf.zeros_like(rays), rays], axis=0)
+all_rays += tf.expand_dims(tf.constant([0, 0, 1, 0, 0, 0], dtype=tf.float64), axis=1)
 #
 # rays = np.reshape(pixels3d, (3, -1))
 # rays = np.swapaxes(rays, 0, 1)
@@ -49,11 +50,11 @@ surfaces = [
     Surface(geometry=geom.Intersection([geom.Plane(pt(10, 0, 0), direction(-1, -1, 0)),
                                     geom.Plane(pt(10, 0, 0), direction(0, 0, 1))]),
            #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
-           color=pt(0, 1, 1)),
+           color=pt(0.7, 0.7, 1)),
 
-   # Surface(geometry=geom.Box(pt(2, -2, 0), pt(3, 1, 1)),
-   #        #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
-   #        color=pt(0, 1, 1)),
+    Surface(geometry=geom.Box(pt(4, -2, 0), pt(3, 1, 1)),
+          #distance=geom.plane(pt(0, 0, -0.1), direction(0, 0, 1)),
+          color=pt(0, 1, 1)),
     Surface(geometry=geom.Inverse(geom.Sphere(pt(0, 0, 0), 100)),
             color=pt(0, 0, 1)),
  ]
@@ -102,18 +103,42 @@ def gamma_correct(colors):
 
 
 with tf.Session() as sess:
-    prop = tf.Variable(np.zeros(rays.shape[1]), dtype=np.float64)
+    mask = tf.Variable(tf.fill(rays.shape[1:], True))
+    all_prop = tf.Variable(np.zeros(rays.shape[1]), dtype=np.float64)
+
+    unconverged = tf.where(mask)[:, 0]
+
+    rays = tf.gather(all_rays, unconverged, axis=1)
+    prop = tf.gather(all_prop, unconverged, axis=0)
 
     ray_ends = rays[0:3] + rays[3:6] * tf.expand_dims(prop, 0)
 
     surface_dists = tf.stack([s.geometry.distance(ray_ends) for s in surfaces])
 
-    closest_surface_arg = tf.argmin(surface_dists, axis=0)
     closest_surface_dist = tf.math.reduce_min(surface_dists, axis=0)
-    all_converged = tf.math.reduce_all(closest_surface_dist < CONVERGED)
 
-    opt_op = march_op(prop, closest_surface_dist)
+    remaining = tf.math.count_nonzero(mask)
 
+    march_op = tf.group(
+        tf.scatter_add(all_prop, unconverged, closest_surface_dist),
+        tf.scatter_update(mask, unconverged, closest_surface_dist > CONVERGED),
+    )
+
+    print('Graph built')
+    tf.global_variables_initializer().run()
+
+    idx = 0
+    while True:
+        _ = sess.run([march_op])
+        r_remaining = sess.run(remaining)
+        idx += 1
+        print('%d: %d' %(idx, r_remaining))
+        if r_remaining == 0:
+            break
+
+    sess.run(mask.initializer)
+
+    closest_surface_arg = tf.argmin(surface_dists, axis=0)
     normals, = tf.gradients(closest_surface_dist, ray_ends)
     normals = tf.math.l2_normalize(normals, axis=0)
 
@@ -141,35 +166,7 @@ with tf.Session() as sess:
     color = tf.transpose(color, perm=[1, 2, 0])
     color = tf.cast(256*color, dtype=tf.uint8)
     #color = tf.reshape(tf.cast(closest_surface_arg, tf.float64), (WIDTH, HEIGHT))
-    #color = tf.reshape(prop, (WIDTH, HEIGHT))
-    #color = tf.reshape(normals[0,:], (WIDTH, HEIGHT))
 
-    xx = tf.reshape(surface_dists, (-1, WIDTH, HEIGHT))[:, 107, 184]
-
-    tf.global_variables_initializer().run()
-
-    print('Graph built')
-
-
-
-    idx = 0
-    while True:
-        print(idx)
-        _, r_all_converged = sess.run([opt_op, all_converged])
-        idx += 1
-        if r_all_converged:
-            break
-
-
-
-
-#    color = normals[0, :]
-#    color = tf.reshape(color, (WIDTH, HEIGHT))
-
-
-    # touched_surface = tf.argmin(surface_dists, axis=0)
-    # color = tf.gather(surface_colors, touched_surface
-    print(sess.run(xx))
     c = sess.run(color)
     try:
         Image.fromarray(c).save('/tmp/render.png')
@@ -178,51 +175,34 @@ with tf.Session() as sess:
     plt.imshow(c)
     plt.show()
 
-    print('Get normals')
 
 
+#     closest_surface_arg = tf.argmin(surface_dists, axis=0)
+#     all_converged = tf.math.reduce_all(closest_surface_dist < CONVERGED)
+#
+#     opt_op = march_op(prop, closest_surface_dist)
+#
 
+#     #color = tf.reshape(tf.cast(closest_surface_arg, tf.float64), (WIDTH, HEIGHT))
+#     #color = tf.reshape(prop, (WIDTH, HEIGHT))
+#     #color = tf.reshape(normals[0,:], (WIDTH, HEIGHT))
+#
+#     xx = tf.reshape(surface_dists, (-1, WIDTH, HEIGHT))[:, 107, 184]
+#
 
-
-
-#
-# def DisplayFractal(a, fmt='jpeg'):
-#   """Display an array of iteration counts as a
-#      colorful picture of a fractal."""
-#   a_cyclic = (6.28*a/20.0).reshape(list(a.shape)+[1])
-#   img = np.concatenate([10+20*np.cos(a_cyclic),
-#                         30+50*np.sin(a_cyclic),
-#                         155-80*np.cos(a_cyclic)], 2)
-#   img[a==a.max()] = 0
-#   a = img
-#   a = np.uint8(np.clip(a, 0, 255))
-#   plt.imshow(a)
 #
 #
-# sess = tf.InteractiveSession()
-# Y, X = np.mgrid[-1.3:1.3:0.005, -2:1:0.005]
-# Z = X+1j*Y
-# xs = tf.constant(Z.astype(np.complex64))
-# zs = tf.Variable(xs)
-# ns = tf.Variable(tf.zeros_like(xs, tf.float64))
 #
-# tf.global_variables_initializer().run()
 #
-# # Compute the new values of z: z^2 + x
-# zs_ = zs*zs + xs
+# #    color = normals[0, :]
+# #    color = tf.reshape(color, (WIDTH, HEIGHT))
 #
-# # Have we diverged with this new value?
-# not_diverged = tf.abs(zs_) < 4
 #
-# # Operation to update the zs and the iteration count.
-# #
-# # Note: We keep computing zs after they diverge! This
-# #       is very wasteful! There are better, if a little
-# #       less simple, ways to do this.
-# #
-# step = tf.group(
-#   zs.assign(zs_),
-#   ns.assign_add(tf.cast(not_diverged, tf.float64))
-#   )
+#     # touched_surface = tf.argmin(surface_dists, axis=0)
+#     # color = tf.gather(surface_colors, touched_surface
+#     print(sess.run(xx))
+#     c = sess.run(color)
+#     plt.imshow(c)
+#     plt.show()
 #
-# for i in range(200): step.run()
+#     print('Get normals')
