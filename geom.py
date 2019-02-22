@@ -15,8 +15,8 @@ class Sphere:
         self.radius = radius
 
     def distance(self, pts):
-        distance_from_center = pts - tf.expand_dims(self.center, 1)
-        return tf.norm(distance_from_center, axis=0) - self.radius
+        distance_from_center = pts - tf.expand_dims(self.center, 0)
+        return tf.norm(distance_from_center, axis=1) - self.radius
 
 class Inverse:
     def __init__(self, geometry):
@@ -31,10 +31,10 @@ class Plane:
         self.normal = normal
 
     def distance(self, pts):
-        to_ref_point = pts - tf.expand_dims(self.point, axis=1)
+        to_ref_point = pts - tf.expand_dims(self.point, axis=0)
         along_normal = tf.reduce_sum(
-            to_ref_point * tf.expand_dims(self.normal, axis=1),
-            axis=0)
+            to_ref_point * tf.expand_dims(self.normal, axis=0),
+            axis=1)
         return along_normal
 
 class Intersection:
@@ -42,8 +42,8 @@ class Intersection:
         self.surfaces = surfaces
 
     def distance(self, pts):
-        stacked = tf.stack([s.distance(pts) for s in self.surfaces])
-        return tf.reduce_max(stacked, axis=0)
+        stacked = tf.stack([s.distance(pts) for s in self.surfaces], axis=1)
+        return tf.reduce_max(stacked, axis=1)
 
 class Box:
     def __init__(self, p1, p2):
@@ -57,7 +57,7 @@ class Box:
         left = Plane(big, direction(0, 1, 0))
         right = Plane(small, direction(0, -1, 0))
 
-        self.geom = Intersection([top, bottom, back, front, left, right])
+        self.geom = Intersection([front, back, top, bottom, left, right])
 
     def distance(self, pts):
         return self.geom.distance(pts)
