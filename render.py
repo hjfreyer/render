@@ -40,10 +40,6 @@ ray_coords = tf.zeros_like(
 
 rays = tf.concat([ray_coords, ray_dirs], axis=1)
 
-#
-# rays = np.reshape(pixels3d, (3, -1))
-# rays = np.swapaxes(rays, 0, 1)
-
 Surface = collections.namedtuple('Surface', 'geometry color')
 Emitter = collections.namedtuple('Emitter', 'source color')
 Scene = collections.namedtuple('Scene', 'surfaces emitters')
@@ -75,8 +71,9 @@ def white_balance(colors):
     """Takes (N, 3), does white balance"""
     max_per_channel = tf.math.reduce_max(colors, axis=0, keepdims=True)
     colors = colors / max_per_channel
-    colors = tf.minimum(colors, 1)  # In case of really small values of
-    # max_per_channel causing problems.
+
+    # In case of really small values of max_per_channel causing problems.
+    colors = tf.minimum(colors, 1)
     return colors
 
 
@@ -94,30 +91,45 @@ def get_closest_surface_distance(rays, lengths):
     return tf.math.reduce_min(surface_dists, axis=1), tf.argmin(surface_dists, axis=1)
 
 
-with tf.Session() as sess:
-    converged = tf.Variable(tf.fill([rays.shape[0]], False))
-    not_converged = tf.math.logical_not(converged)
-    lengths = tf.Variable(np.zeros(rays.shape[0]), dtype=np.float64)
+def propagate_rays(surfaces, rays):
+    def cond(converged, lengths):
+        return tf.math.reduce_any(tf.logical_not(converged))
 
-    unconverged_idxes = tf.where(not_converged)[:, 0]
+    def body(converged, lengths):
+        unconverged_idxes = tf.where(tf.math.logical_not(converged))
+        unconverged_rays = tf.gather_nd(rays, unconverged_idxes)
+        unconverged_lengths = tf.gather_nd(lengths, unconverged_idxes)
+
+        ray_ends = (unconverged_rays[:, 0:3]
+                    + unconverged_rays[:, 3:6] * tf.expand_dims(unconverged_lengths, 1))
+
+        surface_dists = tf.stack([s.geometry.distance(ray_ends)
+                                  for s in SCENE.surfaces], axis=1)
+        min_surface_dists = tf.math.reduce_min(surface_dists, axis=1)
+
+        converged = tf.math.logical_or(
+            converged,
+            tf.scatter_nd(unconverged_idxes, min_surface_dists < CONVERGED, converged.shape))
+        lengths += tf.scatter_nd(unconverged_idxes,
+                                 min_surface_dists, lengths.shape)
+
+        return converged, lengths
+
+    _, lengths = tf.while_loop(cond, body, (
+        tf.zeros(rays.shape[0], dtype=tf.bool),
+        tf.zeros(rays.shape[0], dtype=tf.float64),
+    ))
+    return lengths
+
+
+with tf.Session() as sess:
+    lengths = propagate_rays(SCENE.surfaces, rays)
 
     ray_ends = rays[:, 0:3] + rays[:, 3:6] * tf.expand_dims(lengths, 1)
     surface_dists = tf.stack([s.geometry.distance(ray_ends)
                               for s in SCENE.surfaces], axis=1)
     closest_surface_dist = tf.math.reduce_min(surface_dists, axis=1)
     closest_surface_arg = tf.argmin(surface_dists, axis=1)
-
-    surface_dists, _ = get_closest_surface_distance(
-        tf.gather(rays, unconverged_idxes, axis=0),
-        tf.gather(lengths, unconverged_idxes, axis=0))
-
-    remaining = tf.math.count_nonzero(not_converged)
-
-    march_op = tf.group(
-        tf.scatter_add(lengths, unconverged_idxes, surface_dists),
-        tf.scatter_update(converged, unconverged_idxes,
-                          surface_dists < CONVERGED),
-    )
 
     normals, = tf.gradients(closest_surface_dist, ray_ends)
     normals = tf.math.l2_normalize(normals, axis=1)
@@ -150,19 +162,8 @@ with tf.Session() as sess:
 
     print('Graph built')
     tf.global_variables_initializer().run()
-
-    idx = 0
-    while True:
-        _ = sess.run([march_op])
-        r_remaining = sess.run(remaining)
-        idx += 1
-        print('%d: %d' % (idx, r_remaining))
-        if r_remaining == 0:
-            break
-
-    sess.run(converged.initializer)
-
     c = sess.run(color)
+
     try:
         Image.fromarray(c).save('/tmp/render.png')
     except Exception as e:
